@@ -21,12 +21,12 @@ parser.add_argument('--train-fraction', type=float,
 # model args
 parser.add_argument('--depth', type=int, default=2, help='depth')
 parser.add_argument('--dim', type=int, default=128, help='dimension')
-parser.add_argument('--heads', type=int, default=1, help='heads')
+parser.add_argument('--heads', type=int, default=2, help='heads')
 parser.add_argument('--dropout', type=float, default=0.2, help='dropout')
 # optimizer args
 parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
 parser.add_argument('--weight-decay', type=float,
-                    default=1, help='weight decay')
+                    default=0.0001, help='weight decay')
 parser.add_argument('--beta1', type=float, default=0.9, help='beta1')
 parser.add_argument('--beta2', type=float, default=0.98, help='beta2')
 parser.add_argument('--warmup', type=int, default=10, help='warmup steps')
@@ -34,7 +34,7 @@ parser.add_argument('--warmup', type=int, default=10, help='warmup steps')
 parser.add_argument('-b', '--batch_size', type=int,
                     default=512, help='batch size')
 parser.add_argument('-e', '--epochs', type=int,
-                    default=150, help='number of epochs')
+                    default=500, help='number of epochs')
 # misc args
 parser.add_argument('--seed', type=int, default=42, help='random seed')
 parser.add_argument('--cpu', action='store_true', help='use cpu only')
@@ -165,7 +165,9 @@ def main(args):
     ax.set_ylabel('Accuracy (%)')
     ax.legend()
     fig.tight_layout()
-    fig.savefig('media/grokking.png', dpi=300)
+    op_safe = args.op.replace('/', 'div').replace('*', 'mul').replace('+', 'add').replace('-', 'sub')
+    filename = f'media/grokking_p{args.p}_op{op_safe}_lr{args.lr}_d{args.depth}_dim{args.dim}_h{args.heads}_wd{args.weight_decay}.png'
+    fig.savefig(filename, dpi=300)
     plt.show()
 
 
@@ -173,4 +175,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.cpu:
         mx.set_default_device(mx.cpu)
-    main(args)
+    
+    # learning rate sweep
+    learning_rates = [1e-3]
+    for lr in learning_rates:
+        print(f"\nTraining with lr={lr}")
+        args.lr = lr
+        main(args)
