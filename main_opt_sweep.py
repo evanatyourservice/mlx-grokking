@@ -215,7 +215,7 @@ def main(args):
     ax.plot(np.array(net.val_acc_trace) * 100, label='val', color='#d95f02', lw=lw)
     ax.set_xlabel('Epoch')
     ax.set_ylabel('Accuracy (%)')
-    ax.set_title(args.optimizer + ' (400 max iters)')
+    ax.set_title(args.optimizer)
     ax.legend()
     fig.tight_layout()
     op_safe = args.op.replace('/', 'div').replace('*', 'mul').replace('+', 'add').replace('-', 'sub')
