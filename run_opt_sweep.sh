@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+CUDA_VISIBLE_DEVICES=0 python main_opt_sweep.py --early-stop --opt-sweep adamw,quad --lr-sweep 3e-3,1e-3,3e-4 --weight-decay-sweep 0.0,0.001,0.01,0.1,0.3 --beta1-sweep 0.9,0.95 "$@"

@@ -35,12 +35,12 @@ parser.add_argument('--beta1', type=float, default=0.9, help='beta1')
 parser.add_argument('--beta2', type=float, default=0.99, help='beta2')
 # training args
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='batch size')
-parser.add_argument('-e', '--epochs', type=int, default=500, help='number of epochs')
+parser.add_argument('-e', '--epochs', type=int, default=400, help='number of epochs')
 # misc args
 parser.add_argument('--seed', type=int, default=42, help='random seed')
-parser.add_argument('--disable-early-stop', action='store_false', help='continue training even after goal validation accuracy is reached')
+parser.add_argument('--early-stop', action='store_true', help='stop training early when goal validation accuracy is reached')
 # model sweep args
-parser.add_argument('--dim-sweep', type=str, default='32,64,128,256', help='comma separated list of dimensions to sweep')
+parser.add_argument('--dim-sweep', type=str, default=None, help='comma separated list of dimensions to sweep')
 parser.add_argument('--depth-sweep', type=str, default=None, help='comma separated list of depths to sweep')
 parser.add_argument('--heads-sweep', type=str, default=None, help='comma separated list of heads to sweep')
 parser.add_argument('--dropout-sweep', type=str, default=None, help='comma separated list of dropout values to sweep')
@@ -202,17 +202,14 @@ def main(args):
     # network/trainer --------------------------------------------------------
     net = NeuralNetwork(model, optimizer, device=device, batch_size=args.batch_size)
     solved_epoch = net.train(
-        Xtrain, Ttrain, Xtest, Ttest, epochs=args.epochs, enable_early_stop=not args.disable_early_stop
+        Xtrain, Ttrain, Xtest, Ttest, epochs=args.epochs, enable_early_stop=args.early_stop
     )
-
-    # get final validation accuracy
-    final_val_acc = net.val_acc_trace[-1] if net.val_acc_trace else 0.0
 
     print(
-        f"summary | opt {args.optimizer} depth {args.depth} dim {args.dim} heads {args.heads} dropout {args.dropout} | final_val_acc {final_val_acc:.4f} solved_epoch {solved_epoch}"
+        f"summary | opt {args.optimizer} depth {args.depth} dim {args.dim} heads {args.heads} dropout {args.dropout} | solved_epoch {solved_epoch}"
     )
 
-    return final_val_acc
+    return solved_epoch
 
 
 def _parse_sweep_list(value: str | None):
@@ -233,34 +230,44 @@ def _parse_string_list(value: str | None):
     return [v.strip() for v in value.split(',') if v.strip()]
 
 
-def plot_comparison(sweep_param_name: str, sweep_values: list, adamw_accuracies: list, quad_accuracies: list, args):
-    """Plot comparison of AdamW vs QUAD across swept parameter values."""
-    fig, ax = plt.subplots(figsize=(6, 4))
+def plot_comparison(sweep_param_name: str, sweep_values: list, adamw_solved_epochs: list, quad_solved_epochs: list, args):
+    """Plot comparison of AdamW vs QUAD solved epochs across swept parameter values."""
+    fig, ax = plt.subplots(figsize=(7, 5))
     
-    x = np.arange(len(sweep_values))
-    width = 0.35
+    # line plot with markers
+    ax.plot(sweep_values, adamw_solved_epochs, 'o-', label='AdamW', color='#1b9e77', linewidth=2, markersize=8)
+    ax.plot(sweep_values, quad_solved_epochs, 's-', label='QUAD', color='#d95f02', linewidth=2, markersize=8)
     
-    adamw_bars = ax.bar(x - width/2, np.array(adamw_accuracies) * 100, width, label='AdamW', color='#1b9e77')
-    quad_bars = ax.bar(x + width/2, np.array(quad_accuracies) * 100, width, label='QUAD', color='#d95f02')
+    # clean parameter name for display
+    param_display_names = {
+        'dim': 'Model Dimension',
+        'depth': 'Model Depth',
+        'heads': 'Attention Heads',
+        'dropout': 'Dropout Rate'
+    }
     
-    ax.set_xlabel(sweep_param_name.replace('-', ' ').title())
-    ax.set_ylabel('Final Validation Accuracy (%)')
-    ax.set_title(f'AdamW vs QUAD: {sweep_param_name.replace("-", " ").title()} Sweep')
-    ax.set_xticks(x)
+    ax.set_xlabel(param_display_names.get(sweep_param_name, sweep_param_name.replace('-', ' ').title()))
+    ax.set_ylabel('Epochs to Solve (90% Val Acc)')
+    ax.set_title(param_display_names.get(sweep_param_name, sweep_param_name.replace('-', ' ').title()) + ' (400 max iters)')
+    
+    # set x-axis ticks to only show swept values
+    ax.set_xticks(sweep_values)
     ax.set_xticklabels(sweep_values)
-    ax.legend()
-    ax.grid(axis='y', alpha=0.3)
     
-    # add value labels on bars
-    for bars in [adamw_bars, quad_bars]:
-        for bar in bars:
-            height = bar.get_height()
-            ax.annotate(f'{height:.1f}',
-                       xy=(bar.get_x() + bar.get_width() / 2, height),
-                       xytext=(0, 3),  # 3 points vertical offset
-                       textcoords="offset points",
-                       ha='center', va='bottom',
-                       fontsize=8)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # set y-axis to start from 0
+    ax.set_ylim(bottom=0)
+    
+    # add value labels on points
+    for x, y in zip(sweep_values, adamw_solved_epochs):
+        ax.annotate(f'{y}', xy=(x, y), xytext=(0, 5), textcoords='offset points', 
+                   ha='center', fontsize=8, color='#1b9e77')
+    
+    for x, y in zip(sweep_values, quad_solved_epochs):
+        ax.annotate(f'{y}', xy=(x, y), xytext=(0, -15), textcoords='offset points', 
+                   ha='center', fontsize=8, color='#d95f02')
     
     fig.tight_layout()
     
@@ -275,6 +282,17 @@ def plot_comparison(sweep_param_name: str, sweep_values: list, adamw_accuracies:
 
 if __name__ == '__main__':
     args = parser.parse_args()
+
+    # override with best hypers found in opt sweep
+    if args.optimizer == 'quad':
+        args.lr = 3e-3
+        args.weight_decay = 0.3
+        args.beta1 = 0.9
+    elif args.optimizer == 'adamw':
+        args.lr = 3e-3
+        args.weight_decay = 0.3
+        args.beta1 = 0.9
+        args.beta2 = 0.99
     
     # determine which parameter to sweep
     sweep_configs = []
@@ -313,12 +331,12 @@ if __name__ == '__main__':
         for opt in ['adamw', 'quad']:
             run_args = argparse.Namespace(**vars(args))
             run_args.optimizer = opt
-            final_val_acc = main(run_args)
+            solved_epoch = main(run_args)
         exit(0)
     
     # run sweep with both optimizers
-    adamw_accuracies = []
-    quad_accuracies = []
+    adamw_solved_epochs = []
+    quad_solved_epochs = []
     
     for param_name, param_value, config in sweep_configs:
         print(f"\n{'='*60}")
@@ -328,27 +346,27 @@ if __name__ == '__main__':
         # run adamw
         adamw_args = argparse.Namespace(**config)
         adamw_args.optimizer = 'adamw'
-        adamw_acc = main(adamw_args)
-        adamw_accuracies.append(adamw_acc)
+        adamw_solved_epoch = main(adamw_args)
+        adamw_solved_epochs.append(adamw_solved_epoch)
         
         # run quad
         quad_args = argparse.Namespace(**config)
         quad_args.optimizer = 'quad'
-        quad_acc = main(quad_args)
-        quad_accuracies.append(quad_acc)
+        quad_solved_epoch = main(quad_args)
+        quad_solved_epochs.append(quad_solved_epoch)
     
     # plot comparison
-    plot_comparison(sweep_param, sweep_values, adamw_accuracies, quad_accuracies, args)
+    plot_comparison(sweep_param, sweep_values, adamw_solved_epochs, quad_solved_epochs, args)
     
     # print summary
     print(f"\n{'='*60}")
     print(f"sweep summary for {sweep_param}")
     print(f"{'='*60}")
     for i, value in enumerate(sweep_values):
-        print(f"{sweep_param}={value}: adamw={adamw_accuracies[i]:.4f}, quad={quad_accuracies[i]:.4f}")
+        print(f"{sweep_param}={value}: adamw={adamw_solved_epochs[i]}, quad={quad_solved_epochs[i]}")
     
     # find best configurations
-    best_adamw_idx = np.argmax(adamw_accuracies)
-    best_quad_idx = np.argmax(quad_accuracies)
-    print(f"\nbest adamw: {sweep_param}={sweep_values[best_adamw_idx]} with accuracy={adamw_accuracies[best_adamw_idx]:.4f}")
-    print(f"best quad: {sweep_param}={sweep_values[best_quad_idx]} with accuracy={quad_accuracies[best_quad_idx]:.4f}")
+    best_adamw_idx = np.argmin(adamw_solved_epochs)
+    best_quad_idx = np.argmin(quad_solved_epochs)
+    print(f"\nbest adamw: {sweep_param}={sweep_values[best_adamw_idx]} with solved_epoch={adamw_solved_epochs[best_adamw_idx]}")
+    print(f"best quad: {sweep_param}={sweep_values[best_quad_idx]} with solved_epoch={quad_solved_epochs[best_quad_idx]}")

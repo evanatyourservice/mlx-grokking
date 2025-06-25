@@ -67,6 +67,7 @@ class QUAD(torch.optim.Optimizer):
         diags,
         packeds,
         state_steps,
+        normalize_grads,
     ):
         group_dtype = group['dtype']
         for p in group["params"]:
@@ -78,11 +79,16 @@ class QUAD(torch.optim.Optimizer):
             
             params_with_grad.append(p)
             grads.append(p.grad if group_dtype is None else p.grad.to(dtype=dtype))
+        
+        if normalize_grads:
+            torch._foreach_div_(grads, torch._foreach_add_(torch._foreach_norm(grads), 1e-6))
+        
+        for p, g in zip(params_with_grad, grads):
             state = self.state[p]
             
             if "momentum_buffer" not in state:
                 state["step"] = 0
-                state["momentum_buffer"] = p.grad.clone() if group_dtype is None else p.grad.clone().to(dtype=dtype)
+                state["momentum_buffer"] = g.clone() if group_dtype is None else g.clone().to(dtype=dtype)
                 state["merged_shape"] = merge_adjacent_dims_to_three(state["momentum_buffer"])
                 
                 g_reshaped = state["momentum_buffer"].view(state["merged_shape"])
@@ -174,14 +180,12 @@ class QUAD(torch.optim.Optimizer):
                 diags,
                 packeds,
                 state_steps,
+                group["normalize_grads"],
             )
 
             if len(params_with_grad) == 0:
                 continue
 
-            if group['normalize_grads']:
-                torch._foreach_div_(grads, torch._foreach_add_(torch._foreach_norm(grads), 1e-6))
-            
             torch._foreach_lerp_(momentum_buffers, grads, 1 - group['momentum'])
             
             dtype = group['dtype']
@@ -300,6 +304,15 @@ def matmul_transpose(x, transpose=False):
     return x @ x.mT
 
 
+def lb(x):
+    row_norm_sq = torch.sum(x * x, dim=-1, keepdim=True)
+    max_row_norm_sq, i_max = torch.max(row_norm_sq, dim=-2, keepdim=True)
+    v_r = torch.gather(x, dim=-2, index=i_max.expand(-1, -1, x.shape[-1]))
+    v_r = v_r.transpose(-2, -1) / torch.sqrt(max_row_norm_sq)
+    ell_r = torch.norm(x @ v_r, dim=(-2, -1), keepdim=True)
+    return ell_r
+
+
 precond_beta = 0.95
 
 
@@ -355,11 +368,7 @@ def precondition_dD(Ql, Qr, Ll, Lr, G, precond_lr):
     # right dense update
     term1_r = matmul_transpose(Pg, transpose=True)
     term2_r = G.numel() / Qr.shape[-1]
-    row_norm_sq = torch.sum(term1_r * term1_r, dim=-1, keepdim=True)
-    max_row_norm_sq, i_max = torch.max(row_norm_sq, dim=-2, keepdim=True)
-    v_r = torch.gather(term1_r, dim=-2, index=i_max.expand(-1, -1, term1_r.shape[-1]))
-    v_r = v_r.transpose(-2, -1) / torch.sqrt(max_row_norm_sq)
-    ell_r = torch.norm(term1_r @ v_r, dim=(-2, -1), keepdim=True) + term2_r
+    ell_r = lb(term1_r) + term2_r
     Lr.copy_(torch.maximum(precond_beta * Lr + (1 - precond_beta) * ell_r, ell_r))
     p = Qr - precond_lr/2/Lr * (term1_r @ Qr - term2_r * Qr)
     p = p - precond_lr/2/Lr * (p @ term1_r - p * term2_r)
@@ -376,11 +385,7 @@ def precondition_Dd(Ql, Qr, Ll, Lr, G, precond_lr):
     # left dense update
     term1_l = matmul_transpose(Pg)
     term2_l = G.numel() / Ql.shape[-1]
-    row_norm_sq = torch.sum(term1_l * term1_l, dim=-1, keepdim=True)
-    max_row_norm_sq, i_max = torch.max(row_norm_sq, dim=-2, keepdim=True)
-    v_r = torch.gather(term1_l, dim=-2, index=i_max.expand(-1, -1, term1_l.shape[-1]))
-    v_r = v_r.transpose(-2, -1) / torch.sqrt(max_row_norm_sq)
-    ell_l = torch.norm(term1_l @ v_r, dim=(-2, -1), keepdim=True) + term2_l
+    ell_l = lb(term1_l) + term2_l
     Ll.copy_(torch.maximum(precond_beta * Ll + (1 - precond_beta) * ell_l, ell_l))
     p = Ql - precond_lr/2/Ll * (term1_l @ Ql - term2_l * Ql)
     p = p - precond_lr/2/Ll * (p @ term1_l - p * term2_l)
@@ -405,11 +410,7 @@ def precondition_DD(Ql, Qr, Ll, Lr, G, precond_lr):
     # left dense update
     term1_l = matmul_transpose(Pg)
     term2_l = G.numel() / Ql.shape[-1]
-    row_norm_sq = torch.sum(term1_l * term1_l, dim=-1, keepdim=True)
-    max_row_norm_sq, i_max = torch.max(row_norm_sq, dim=-2, keepdim=True)
-    v_r = torch.gather(term1_l, dim=-2, index=i_max.expand(-1, -1, term1_l.shape[-1]))
-    v_r = v_r.transpose(-2, -1) / torch.sqrt(max_row_norm_sq)
-    ell_l = torch.norm(term1_l @ v_r, dim=(-2, -1), keepdim=True) + term2_l
+    ell_l = lb(term1_l) + term2_l
     Ll.copy_(torch.maximum(precond_beta * Ll + (1 - precond_beta) * ell_l, ell_l))
     p = Ql - precond_lr/2/Ll * (term1_l @ Ql - term2_l * Ql)
     p = p - precond_lr/2/Ll * (p @ term1_l - p * term2_l)
@@ -418,11 +419,7 @@ def precondition_DD(Ql, Qr, Ll, Lr, G, precond_lr):
     # right dense update
     term1_r = matmul_transpose(Pg, transpose=True)
     term2_r = G.numel() / Qr.shape[-1]
-    row_norm_sq = torch.sum(term1_r * term1_r, dim=-1, keepdim=True)
-    max_row_norm_sq, i_max = torch.max(row_norm_sq, dim=-2, keepdim=True)
-    v_r = torch.gather(term1_r, dim=-2, index=i_max.expand(-1, -1, term1_r.shape[-1]))
-    v_r = v_r.transpose(-2, -1) / torch.sqrt(max_row_norm_sq)
-    ell_r = torch.norm(term1_r @ v_r, dim=(-2, -1), keepdim=True) + term2_r
+    ell_r = lb(term1_r) + term2_r
     Lr.copy_(torch.maximum(precond_beta * Lr + (1 - precond_beta) * ell_r, ell_r))
     p = Qr - precond_lr/2/Lr * (term1_r @ Qr - term2_r * Qr)
     p = p - precond_lr/2/Lr * (p @ term1_r - p * term2_r)

@@ -7,15 +7,14 @@ Note: lowered train fraction from 0.5 to 0.4 to make problem slightly harder.
 Tuned in:
 
 ```python
-lr = [1e-2, 3e-3, 1e-3, 3e-4, 1e-4]
-wd = [0.0, 0.0001, 0.001, 0.01, 0.1, 0.3]
+lr = [3e-3, 1e-3, 3e-4]
+wd = [0.0, 0.001, 0.01, 0.1, 0.3]
 b1 = [0.9, 0.95]
-b2 = [0.9, 0.95, 0.98, 0.99, 0.999]
 ```
 
-Best QUAD: `lr=3e-3, wd=0.1, b1=0.9`
+Best QUAD: `lr=3e-3, wd=0.3, b1=0.9`
 
-Best AdamW: `lr=3e-3, wd=0.1, b1=0.9, b2=0.99`
+Best AdamW: `lr=3e-3, wd=0.3, b1=0.9, b2=0.99`
 
 **AdamW:**
 <p align="center">
@@ -25,6 +24,28 @@ Best AdamW: `lr=3e-3, wd=0.1, b1=0.9, b2=0.99`
 **PSGD-QUAD:**
 <p align="center">
   <img src="media/best_quad.png" alt="Best QUAD Configuration" width="60%">
+</p>
+
+## Architecture Sweeps
+
+**Dimension Sweep:**
+<p align="center">
+  <img src="media/grokking_p97_opdiv_dim_sweep_comparison.png" alt="Dimension Sweep" width="60%">
+</p>
+
+**Depth Sweep:**
+<p align="center">
+  <img src="media/grokking_p97_opdiv_depth_sweep_comparison.png" alt="Depth Sweep" width="60%">
+</p>
+
+**Heads Sweep:**
+<p align="center">
+  <img src="media/grokking_p97_opdiv_heads_sweep_comparison.png" alt="Heads Sweep" width="60%">
+</p>
+
+**Dropout Sweep:**
+<p align="center">
+  <img src="media/grokking_p97_opdiv_dropout_sweep_comparison.png" alt="Dropout Sweep" width="60%">
 </p>
 
 ## Grokking

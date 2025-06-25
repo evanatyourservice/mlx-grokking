@@ -34,11 +34,11 @@ parser.add_argument('--beta1', type=float, default=0.9, help='beta1')
 parser.add_argument('--beta2', type=float, default=0.99, help='beta2')
 # training args
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='batch size')
-parser.add_argument('-e', '--epochs', type=int, default=250, help='number of epochs')
+parser.add_argument('-e', '--epochs', type=int, default=400, help='number of epochs')
 # misc args
 parser.add_argument('--seed', type=int, default=42, help='random seed')
-parser.add_argument('--disable-early-stop', action='store_false', help='continue training even after goal validation accuracy is reached')
-parser.add_argument('--opt-sweep', type=str, default='quad,adamw', help='comma separated list of optimizers to sweep, overrides --optimizer')
+parser.add_argument('--early-stop', action='store_true', help='stop training early when goal validation accuracy is reached')
+parser.add_argument('--opt-sweep', type=str, default='adamw,quad', help='comma separated list of optimizers to sweep, overrides --optimizer')
 parser.add_argument('--lr-sweep', type=str, default=None, help='comma separated list of learning rates to sweep, overrides --lr')
 parser.add_argument('--weight-decay-sweep', type=str, default=None, help='comma separated list of weight decay values to sweep, overrides --weight-decay')
 parser.add_argument('--beta1-sweep', type=str, default=None, help='comma separated list of beta1 values to sweep, overrides --beta1')
@@ -201,11 +201,11 @@ def main(args):
     # network/trainer --------------------------------------------------------
     net = NeuralNetwork(model, optimizer, device=device, batch_size=args.batch_size)
     solved_epoch = net.train(
-        Xtrain, Ttrain, Xtest, Ttest, epochs=args.epochs, enable_early_stop=not args.disable_early_stop
+        Xtrain, Ttrain, Xtest, Ttest, epochs=args.epochs, enable_early_stop=args.early_stop
     )
 
     print(
-        f"summary | lr {args.lr:.2e} wd {args.weight_decay} b1 {args.beta1} b2 {args.beta2} | solved_epoch {solved_epoch}"
+        f"summary | opt {args.optimizer} lr {args.lr:.2e} wd {args.weight_decay} b1 {args.beta1} b2 {args.beta2} | solved_epoch {solved_epoch}"
     )
 
     # plotting ---------------------------------------------------------------
@@ -215,11 +215,14 @@ def main(args):
     ax.plot(np.array(net.val_acc_trace) * 100, label='val', color='#d95f02', lw=lw)
     ax.set_xlabel('Epoch')
     ax.set_ylabel('Accuracy (%)')
-    ax.set_title(args.optimizer)
+    ax.set_title(args.optimizer + ' (400 max iters)')
     ax.legend()
     fig.tight_layout()
     op_safe = args.op.replace('/', 'div').replace('*', 'mul').replace('+', 'add').replace('-', 'sub')
-    filename = f"media/grokking_p{args.p}_op{op_safe}_opt{args.optimizer}_lr{args.lr}_d{args.depth}_dim{args.dim}_h{args.heads}.png"
+    if args.optimizer == 'quad':
+        filename = f"media/grokking_p{args.p}_op{op_safe}_opt{args.optimizer}_lr{args.lr}_wd{args.weight_decay}_b1{args.beta1}.png"
+    else:
+        filename = f"media/grokking_p{args.p}_op{op_safe}_opt{args.optimizer}_lr{args.lr}_wd{args.weight_decay}_b1{args.beta1}_b2{args.beta2}.png"
     fig.savefig(filename, dpi=300)
     plt.close(fig)
 
