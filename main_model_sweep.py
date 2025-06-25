@@ -7,6 +7,7 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from typing import Optional
+import os
 
 from models import Transformer
 from data import grokking_data
@@ -29,7 +30,7 @@ parser.add_argument('--dropout', type=float, default=0.05, help='dropout')
 # optimizer args
 parser.add_argument('--optimizer', type=str, default='quad', choices=['adamw', 'quad'], help='optimizer')
 parser.add_argument('--lr', type=float, default=3e-3, help='learning rate')
-parser.add_argument('--weight-decay', type=float, default=0.1, help='weight decay')
+parser.add_argument('--weight-decay', type=float, default=0.3, help='weight decay')
 parser.add_argument('--beta1', type=float, default=0.9, help='beta1')
 parser.add_argument('--beta2', type=float, default=0.99, help='beta2')
 # training args
@@ -38,11 +39,11 @@ parser.add_argument('-e', '--epochs', type=int, default=500, help='number of epo
 # misc args
 parser.add_argument('--seed', type=int, default=42, help='random seed')
 parser.add_argument('--disable-early-stop', action='store_false', help='continue training even after goal validation accuracy is reached')
-parser.add_argument('--opt-sweep', type=str, default='adamw,quad', help='comma separated list of optimizers to sweep, overrides --optimizer')
-parser.add_argument('--lr-sweep', type=str, default=None, help='comma separated list of learning rates to sweep, overrides --lr')
-parser.add_argument('--weight-decay-sweep', type=str, default=None, help='comma separated list of weight decay values to sweep, overrides --weight-decay')
-parser.add_argument('--beta1-sweep', type=str, default=None, help='comma separated list of beta1 values to sweep, overrides --beta1')
-parser.add_argument('--beta2-sweep', type=str, default=None, help='comma separated list of beta2 values to sweep, overrides --beta2')
+# model sweep args
+parser.add_argument('--dim-sweep', type=str, default='32,64,128,256', help='comma separated list of dimensions to sweep')
+parser.add_argument('--depth-sweep', type=str, default=None, help='comma separated list of depths to sweep')
+parser.add_argument('--heads-sweep', type=str, default=None, help='comma separated list of heads to sweep')
+parser.add_argument('--dropout-sweep', type=str, default=None, help='comma separated list of dropout values to sweep')
 
 
 class NeuralNetwork:
@@ -168,11 +169,12 @@ def build_optimizer(args, model_params):
             lr=args.lr,
             momentum=args.beta1,
             weight_decay=args.weight_decay,
-            preconditioner_lr=0.9,
+            preconditioner_lr=1.0,
             max_size_dense=float('inf'),
             max_skew_dense=1.0,
             store_triu_vector=False,
             precondition_largest_two_dims=True,
+            normalize_grads=True,
             dtype=torch.float32,
         )
     raise ValueError(f"unknown optimizer {args.optimizer}")
@@ -203,26 +205,14 @@ def main(args):
         Xtrain, Ttrain, Xtest, Ttest, epochs=args.epochs, enable_early_stop=not args.disable_early_stop
     )
 
+    # get final validation accuracy
+    final_val_acc = net.val_acc_trace[-1] if net.val_acc_trace else 0.0
+
     print(
-        f"summary | lr {args.lr:.2e} wd {args.weight_decay} b1 {args.beta1} b2 {args.beta2} | solved_epoch {solved_epoch}"
+        f"summary | opt {args.optimizer} depth {args.depth} dim {args.dim} heads {args.heads} dropout {args.dropout} | final_val_acc {final_val_acc:.4f} solved_epoch {solved_epoch}"
     )
 
-    # plotting ---------------------------------------------------------------
-    fig, ax = plt.subplots(figsize=(5, 3.5))
-    lw = 2
-    ax.plot(np.array(net.train_acc_trace) * 100, label='train', color='#1b9e77', lw=lw)
-    ax.plot(np.array(net.val_acc_trace) * 100, label='val', color='#d95f02', lw=lw)
-    ax.set_xlabel('Epoch')
-    ax.set_ylabel('Accuracy (%)')
-    ax.set_title(args.optimizer)
-    ax.legend()
-    fig.tight_layout()
-    op_safe = args.op.replace('/', 'div').replace('*', 'mul').replace('+', 'add').replace('-', 'sub')
-    filename = f"media/grokking_p{args.p}_op{op_safe}_opt{args.optimizer}_lr{args.lr}_d{args.depth}_dim{args.dim}_h{args.heads}_wd{args.weight_decay}.png"
-    fig.savefig(filename, dpi=300)
-    plt.close(fig)
-
-    return solved_epoch
+    return final_val_acc
 
 
 def _parse_sweep_list(value: str | None):
@@ -231,42 +221,134 @@ def _parse_sweep_list(value: str | None):
     return [float(v) for v in value.split(',') if v]
 
 
+def _parse_int_list(value: str | None):
+    if value is None:
+        return None
+    return [int(v) for v in value.split(',') if v]
+
+
 def _parse_string_list(value: str | None):
     if value is None:
         return None
     return [v.strip() for v in value.split(',') if v.strip()]
 
 
+def plot_comparison(sweep_param_name: str, sweep_values: list, adamw_accuracies: list, quad_accuracies: list, args):
+    """Plot comparison of AdamW vs QUAD across swept parameter values."""
+    fig, ax = plt.subplots(figsize=(6, 4))
+    
+    x = np.arange(len(sweep_values))
+    width = 0.35
+    
+    adamw_bars = ax.bar(x - width/2, np.array(adamw_accuracies) * 100, width, label='AdamW', color='#1b9e77')
+    quad_bars = ax.bar(x + width/2, np.array(quad_accuracies) * 100, width, label='QUAD', color='#d95f02')
+    
+    ax.set_xlabel(sweep_param_name.replace('-', ' ').title())
+    ax.set_ylabel('Final Validation Accuracy (%)')
+    ax.set_title(f'AdamW vs QUAD: {sweep_param_name.replace("-", " ").title()} Sweep')
+    ax.set_xticks(x)
+    ax.set_xticklabels(sweep_values)
+    ax.legend()
+    ax.grid(axis='y', alpha=0.3)
+    
+    # add value labels on bars
+    for bars in [adamw_bars, quad_bars]:
+        for bar in bars:
+            height = bar.get_height()
+            ax.annotate(f'{height:.1f}',
+                       xy=(bar.get_x() + bar.get_width() / 2, height),
+                       xytext=(0, 3),  # 3 points vertical offset
+                       textcoords="offset points",
+                       ha='center', va='bottom',
+                       fontsize=8)
+    
+    fig.tight_layout()
+    
+    # save plot
+    os.makedirs('media', exist_ok=True)
+    op_safe = args.op.replace('/', 'div').replace('*', 'mul').replace('+', 'add').replace('-', 'sub')
+    filename = f"media/grokking_p{args.p}_op{op_safe}_{sweep_param_name}_sweep_comparison.png"
+    fig.savefig(filename, dpi=300)
+    plt.close(fig)
+    print(f"saved comparison plot to {filename}")
+
+
 if __name__ == '__main__':
     args = parser.parse_args()
-
-    opt_list = _parse_string_list(args.opt_sweep) or [args.optimizer]
-    lr_list = _parse_sweep_list(args.lr_sweep) or [args.lr]
-    wd_list = _parse_sweep_list(args.weight_decay_sweep) or [args.weight_decay]
-    beta1_list = _parse_sweep_list(args.beta1_sweep) or [args.beta1]
-    beta2_list = _parse_sweep_list(args.beta2_sweep) or [args.beta2]
-
-    best_solved_epoch = args.epochs  # initialize with max epochs
-    best_cfg = None
-
-    for opt in opt_list:
-        for lr in lr_list:
-            for wd in wd_list:
-                for beta1 in beta1_list:
-                    for beta2 in beta2_list:
-                        run_args = argparse.Namespace(**vars(args))
-                        run_args.optimizer = opt
-                        run_args.lr = lr
-                        run_args.weight_decay = wd
-                        run_args.beta1 = beta1
-                        run_args.beta2 = beta2
-                        solved_epoch = main(run_args)
-                        if solved_epoch < best_solved_epoch:
-                            best_solved_epoch = solved_epoch
-                            best_cfg = (opt, lr, wd, beta1, beta2)
-
-    if best_cfg is not None:
-        opt, lr, wd, beta1, beta2 = best_cfg
-        print(
-            f"best config | opt {opt} lr {lr:.2e} wd {wd} b1 {beta1} b2 {beta2} | solved_epoch {best_solved_epoch}"
-        )
+    
+    # determine which parameter to sweep
+    sweep_configs = []
+    
+    if args.dim_sweep:
+        sweep_param = 'dim'
+        sweep_values = _parse_int_list(args.dim_sweep)
+        for value in sweep_values:
+            config = vars(args).copy()
+            config['dim'] = value
+            sweep_configs.append((sweep_param, value, config))
+    elif args.depth_sweep:
+        sweep_param = 'depth'
+        sweep_values = _parse_int_list(args.depth_sweep)
+        for value in sweep_values:
+            config = vars(args).copy()
+            config['depth'] = value
+            sweep_configs.append((sweep_param, value, config))
+    elif args.heads_sweep:
+        sweep_param = 'heads'
+        sweep_values = _parse_int_list(args.heads_sweep)
+        for value in sweep_values:
+            config = vars(args).copy()
+            config['heads'] = value
+            sweep_configs.append((sweep_param, value, config))
+    elif args.dropout_sweep:
+        sweep_param = 'dropout'
+        sweep_values = _parse_sweep_list(args.dropout_sweep)
+        for value in sweep_values:
+            config = vars(args).copy()
+            config['dropout'] = value
+            sweep_configs.append((sweep_param, value, config))
+    else:
+        # no sweep, just run once with default parameters
+        print("no sweep parameters specified, running single configuration")
+        for opt in ['adamw', 'quad']:
+            run_args = argparse.Namespace(**vars(args))
+            run_args.optimizer = opt
+            final_val_acc = main(run_args)
+        exit(0)
+    
+    # run sweep with both optimizers
+    adamw_accuracies = []
+    quad_accuracies = []
+    
+    for param_name, param_value, config in sweep_configs:
+        print(f"\n{'='*60}")
+        print(f"running {param_name}={param_value}")
+        print(f"{'='*60}")
+        
+        # run adamw
+        adamw_args = argparse.Namespace(**config)
+        adamw_args.optimizer = 'adamw'
+        adamw_acc = main(adamw_args)
+        adamw_accuracies.append(adamw_acc)
+        
+        # run quad
+        quad_args = argparse.Namespace(**config)
+        quad_args.optimizer = 'quad'
+        quad_acc = main(quad_args)
+        quad_accuracies.append(quad_acc)
+    
+    # plot comparison
+    plot_comparison(sweep_param, sweep_values, adamw_accuracies, quad_accuracies, args)
+    
+    # print summary
+    print(f"\n{'='*60}")
+    print(f"sweep summary for {sweep_param}")
+    print(f"{'='*60}")
+    for i, value in enumerate(sweep_values):
+        print(f"{sweep_param}={value}: adamw={adamw_accuracies[i]:.4f}, quad={quad_accuracies[i]:.4f}")
+    
+    # find best configurations
+    best_adamw_idx = np.argmax(adamw_accuracies)
+    best_quad_idx = np.argmax(quad_accuracies)
+    print(f"\nbest adamw: {sweep_param}={sweep_values[best_adamw_idx]} with accuracy={adamw_accuracies[best_adamw_idx]:.4f}")
+    print(f"best quad: {sweep_param}={sweep_values[best_quad_idx]} with accuracy={quad_accuracies[best_quad_idx]:.4f}")

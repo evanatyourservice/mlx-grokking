@@ -36,6 +36,7 @@ class Transformer(nn.Module):
         self.pool = pool
         self.token_emb = nn.Embedding(n_tokens, dim)
         self.pos_emb = nn.Parameter(torch.zeros(1, seq_len, dim))
+        self.in_norm = nn.LayerNorm(dim)
         
         if FLASH_ATTENTION_AVAILABLE and torch.cuda.is_available():
             torch.backends.cuda.enable_flash_sdp(True)
@@ -47,7 +48,7 @@ class Transformer(nn.Module):
             dim_feedforward=4 * dim,
             dropout=dropout,
             batch_first=True,
-            activation='silu'
+            activation='gelu',
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=depth, enable_nested_tensor=False)
         self.norm = nn.LayerNorm(dim)
@@ -78,6 +79,7 @@ class Transformer(nn.Module):
         b, n = x.shape
         tok = self.token_emb(x)                        # (b, n, d)
         tok = tok + self.pos_emb[:, :n]
+        tok = self.in_norm(tok)
         h = self.encoder(tok)                          # (b, n, d)
         if self.pool == 'mean':
             h = h.mean(dim=1)

@@ -1,16 +1,5 @@
-"""
-simple torchrun for 8xGPUs 1 node:
-torchrun --standalone --nproc_per_node=8 optimizers/quad_batched_optimized.py
-"""
-
 import math
 import torch
-
-def matmul_transpose(x, transpose=False):
-    """Matrix multiplication with optional transpose of x."""
-    if transpose:
-        return x.mT @ x
-    return x @ x.mT
 
 
 PACK_THRESHOLD = 1024
@@ -33,6 +22,7 @@ class QUAD(torch.optim.Optimizer):
             optimizer steps saving 50% memory between steps.
         precondition_largest_two_dims: Precondition largest two dimensions instead of last two
             dimensions after reshaping layer to 3 dimensions.
+        normalize_grads: normalize incoming gradient tensors to unit norm.
         dtype: dtype for all computations and states in QUAD.
     """
     def __init__(
@@ -45,7 +35,8 @@ class QUAD(torch.optim.Optimizer):
         max_size_dense: int = 8192,
         max_skew_dense: float = 1.0,
         store_triu_vector: bool = False,
-        precondition_largest_two_dims: bool = False,
+        precondition_largest_two_dims: bool = True,
+        normalize_grads: bool = False,
         dtype: torch.dtype | None = None,
     ):
         defaults = dict(
@@ -57,6 +48,7 @@ class QUAD(torch.optim.Optimizer):
             max_skew_dense=max_skew_dense,
             store_triu_vector=store_triu_vector,
             precondition_largest_two_dims=precondition_largest_two_dims,
+            normalize_grads=normalize_grads,
             dtype=dtype,
         )
         super().__init__(params, defaults)
@@ -186,6 +178,9 @@ class QUAD(torch.optim.Optimizer):
 
             if len(params_with_grad) == 0:
                 continue
+
+            if group['normalize_grads']:
+                torch._foreach_div_(grads, torch._foreach_add_(torch._foreach_norm(grads), 1e-6))
             
             torch._foreach_lerp_(momentum_buffers, grads, 1 - group['momentum'])
             
@@ -293,13 +288,20 @@ class QUAD(torch.optim.Optimizer):
             if group["weight_decay"] > 0:
                 torch._foreach_mul_(params_with_grad, 1 - group["lr"] * group["weight_decay"])
             
-            # divide by 10 to match adam
+            # scale down to match adam's update norm
             torch._foreach_add_(params_with_grad, preconditioned_grads, alpha=-group["lr"] / 3.0)
 
         return loss
+    
+
+def matmul_transpose(x, transpose=False):
+    if transpose:
+        return x.mT @ x
+    return x @ x.mT
 
 
 precond_beta = 0.95
+
 
 @torch.compile
 def update_diag_solo(Q, L, G, precond_lr):
