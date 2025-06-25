@@ -1,5 +1,5 @@
 import numpy as np
-import mlx.core as mx
+import torch
 
 
 def grokking_data(p: int, op: str = '/', train_fraction: float = 0.5):
@@ -14,22 +14,40 @@ def grokking_data(p: int, op: str = '/', train_fraction: float = 0.5):
         raise ValueError(
             "Unsupported operation, choose from ['*', '/', '+', '-']")
 
-    X = np.array([(a, b) for a in range(p)
-                 for b in range(1 if op == '/' else 0, p)])
-    T = np.array([operations[op](a, b) for a, b in X])
+    # generate all pairs more efficiently
+    if op == '/':
+        a_vals = np.repeat(np.arange(p), p - 1)
+        b_vals = np.tile(np.arange(1, p), p)
+    else:
+        a_vals = np.repeat(np.arange(p), p)
+        b_vals = np.tile(np.arange(p), p)
+    
+    X = np.column_stack((a_vals, b_vals))
+    
+    # vectorized operations where possible
+    if op == '+':
+        T = (a_vals + b_vals) % p
+    elif op == '-':
+        T = (a_vals - b_vals) % p
+    elif op == '*':
+        T = (a_vals * b_vals) % p
+    else:  # division
+        T = np.array([operations[op](a, b) for a, b in X])
 
-    embed = {'*': p, '/': p, '+': p, '-': p, '=': p + 1}
-    X = np.array([
-        [a, embed[op], b, embed['=']]
-        for (a, b) in X
-    ])
+    # create embeddings more efficiently
+    embed_op = p
+    embed_eq = p + 1
+    X = np.column_stack((X[:, 0], np.full(len(X), embed_op), X[:, 1], np.full(len(X), embed_eq)))
 
     n_train = int(train_fraction * len(X))
     inds = np.random.permutation(len(X))
     Xtrain, Ttrain = X[inds[:n_train]], T[inds[:n_train]]
     Xtest, Ttest = X[inds[n_train:]], T[inds[n_train:]]
 
-    return mx.array(Xtrain), mx.array(Ttrain), mx.array(Xtest), mx.array(Ttest)
+    return torch.tensor(Xtrain, dtype=torch.long), \
+           torch.tensor(Ttrain, dtype=torch.long), \
+           torch.tensor(Xtest, dtype=torch.long), \
+           torch.tensor(Ttest, dtype=torch.long)
 
 
 if __name__ == '__main__':

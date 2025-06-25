@@ -1,5 +1,5 @@
 matplotlib
-mlx
-mlx_data
+torch
 numpy
 tqdm
+optuna

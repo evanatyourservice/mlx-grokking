@@ -1,125 +1,96 @@
-import mlx.nn as nn
-import mlx.core as mx
+import torch
+import torch.nn as nn
 
-from mlx.utils import tree_flatten, tree_map
-
-
-class Attention(nn.Module):
-    def __init__(self, dim, heads=8, dim_head=64, dropout=0.):
-        super().__init__()
-        inner_dim = dim_head * heads
-        project_out = not (heads == 1 and dim_head == dim)
-
-        self.heads = heads
-        self.scale = dim_head ** -0.5
-
-        self.norm = nn.RMSNorm(dim)
-        self.dropout = nn.Dropout(dropout)
-
-        self.wq = nn.Linear(dim, inner_dim, bias=False)
-        self.wk = nn.Linear(dim, inner_dim, bias=False)
-        self.wv = nn.Linear(dim, inner_dim, bias=False)
-        self.wo = nn.Linear(inner_dim, dim, bias=False)
-        self.rope = nn.RoPE(dim_head, traditional=True, base=1e6)
-
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, dim),
-            nn.Dropout(dropout)
-        ) if project_out else nn.Identity()
-
-    def __call__(self, x, mask=None):
-        b, n, d = x.shape
-        x = self.norm(x)
-
-        queries, keys, values = self.wq(x), self.wk(x), self.wv(x)
-        reshaper = (lambda x: x.reshape(
-            b, n, self.heads, -1).transpose(0, 2, 1, 3))
-        queries, keys, values = map(reshaper, (queries, keys, values))
-
-        queries = self.rope(queries)
-        keys = self.rope(keys)
-
-        output = mx.fast.scaled_dot_product_attention(
-            queries, keys, values, scale=self.scale, mask=mask
-        ).transpose(0, 2, 1, 3).reshape(b, n, -1)
-
-        return self.wo(output)
-
-
-class FeedForward(nn.Module):
-    def __init__(self, dim, mlp_dim, dropout=0.):
-        super().__init__()
-        self.norm = nn.RMSNorm(dim)
-        self.dropout = nn.Dropout(dropout)
-        self.w1 = nn.Linear(dim, mlp_dim, bias=False)
-        self.w2 = nn.Linear(mlp_dim, dim, bias=False)
-        self.w3 = nn.Linear(dim, mlp_dim, bias=False)
-
-    def __call__(self, x) -> mx.array:
-        x = self.norm(x)
-        return self.w2(self.dropout(nn.silu(self.w1(x))) * self.w3(x))
-
-
-class Block(nn.Module):
-    def __init__(self, dim, heads, dim_head, mlp_dim, seq_len, dropout):
-        super().__init__()
-        self.attn = Attention(dim, heads, dim_head, dropout)
-        self.ff = FeedForward(dim, mlp_dim, dropout)
-        self._mask = self._causal_mask(seq_len)
-
-    def _causal_mask(self, n: int) -> mx.array:
-        mask = mx.triu(mx.full(
-            (n, n), -float('inf'), dtype=mx.float32
-        ), k=1)
-        return mask
-
-    def __call__(self, x):
-        x = x + self.attn(x, mask=self._mask)
-        return x + self.ff(x)
+try:
+    from torch.nn.functional import scaled_dot_product_attention
+    FLASH_ATTENTION_AVAILABLE = True
+except ImportError:
+    FLASH_ATTENTION_AVAILABLE = False
 
 
 class Transformer(nn.Module):
-    def __init__(self, depth, dim, heads, n_tokens, seq_len, dropout=0., pool='cls'):
+    """Simple Transformer encoder for sequence classification.
+
+    Parameters
+    ----------
+    depth : int
+        number of encoder layers
+    dim : int
+        model dimension
+    heads : int
+        number of attention heads
+    n_tokens : int
+        vocabulary size
+    seq_len : int
+        maximum sequence length
+    dropout : float, optional
+        dropout probability, by default 0.0
+    pool : str, optional
+        'cls' uses last token, 'mean' averages sequence, by default 'cls'
+    """
+
+    def __init__(self, depth: int, dim: int, heads: int, n_tokens: int, seq_len: int,
+                 dropout: float = 0.0, pool: str = 'cls') -> None:
         super().__init__()
-        assert pool in {'cls', 'mean'}, \
-            'pool must be either cls (=) or mean (pooling)'
+        assert pool in {'cls', 'mean'}, "pool must be 'cls' or 'mean'"
         self.pool = pool
-        self.embedding = nn.Embedding(n_tokens, dim)
-        self.layers = nn.Sequential(*[
-            Block(dim, heads, dim//heads, dim*4, seq_len, dropout)
-            for _ in range(depth)
-        ])
-        self.norm = nn.RMSNorm(dim)
+        self.token_emb = nn.Embedding(n_tokens, dim)
+        self.pos_emb = nn.Parameter(torch.zeros(1, seq_len, dim))
+        
+        if FLASH_ATTENTION_AVAILABLE and torch.cuda.is_available():
+            torch.backends.cuda.enable_flash_sdp(True)
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=dim,
+            nhead=heads,
+            dim_feedforward=4 * dim,
+            dropout=dropout,
+            batch_first=True,
+            activation='silu'
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=depth, enable_nested_tensor=False)
+        self.norm = nn.LayerNorm(dim)
         self.out = nn.Linear(dim, n_tokens, bias=False)
 
+        self._init_params()
+
+    def _init_params(self) -> None:
+        nn.init.trunc_normal_(self.pos_emb, std=0.02)
+        nn.init.normal_(self.token_emb.weight, std=1.0 / (self.token_emb.embedding_dim ** 0.5))
+        nn.init.xavier_uniform_(self.out.weight)
+
+    # convenience properties -------------------------------------------------
     @property
-    def num_params(self):
-        return sum(x.size for k, x in tree_flatten(self.parameters()))
+    def num_params(self) -> int:
+        return sum(p.numel() for p in self.parameters())
 
     @property
     def shapes(self):
-        return tree_map(lambda x: x.shape, self.parameters())
+        return {k: tuple(p.shape) for k, p in self.named_parameters()}
 
     def summary(self):
         print(self)
         print(f'Number of parameters: {self.num_params}')
 
-    def __call__(self, x):
-        x = self.layers(self.embedding(x))
-        x = mx.mean(x, axis=1) if self.pool == 'mean' else x[:, -1]
-        return self.out(self.norm(x))
+    # forward ----------------------------------------------------------------
+    def forward(self, x: torch.Tensor) -> torch.Tensor:  # (b, n)
+        b, n = x.shape
+        tok = self.token_emb(x)                        # (b, n, d)
+        tok = tok + self.pos_emb[:, :n]
+        h = self.encoder(tok)                          # (b, n, d)
+        if self.pool == 'mean':
+            h = h.mean(dim=1)
+        else:
+            h = h[:, -1]  # last token
+        return self.out(self.norm(h))
 
 
 if __name__ == '__main__':
     n_tokens = 10
-    seq_len = 5
-    model = Transformer(depth=2,
-                        dim=128,
-                        heads=4,
-                        n_tokens=n_tokens,
-                        seq_len=seq_len,
-                        dropout=0.1)
+    seq_len = 4
+    model = Transformer(depth=2, dim=128, heads=4, n_tokens=n_tokens, seq_len=seq_len)
     model.summary()
-    x = mx.random.randint(0, n_tokens, shape=(100, seq_len))
+    x = torch.randint(0, n_tokens, (8, seq_len))
     y = model(x)
     print(y.shape)
