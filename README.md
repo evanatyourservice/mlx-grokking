@@ -1,6 +1,6 @@
 # Grokking Modular Arithmetic (MLX)
 
-## Best Configurations
+## PSGD vs AdamW
 
 **AdamW:**
 <p align="center">
@@ -11,6 +11,8 @@
 <p align="center">
   <img src="media/best_psgd.png" alt="Best QUAD Configuration" width="60%">
 </p>
+
+## Grokking
 
 <p align="center">
   <img src="media/grokking_white_spines.png#gh-dark-mode-only" alt="Grokking" width="50%">
