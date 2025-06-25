@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 
-def grokking_data(p: int, op: str = '/', train_fraction: float = 0.5):
+def grokking_data(p: int, op: str = '/', train_fraction: float = 0.5, seed: int = 42):
     operations = {
         '*': lambda a, b: (a * b) % p,
         '/': lambda a, b: (a * pow(int(b), p-2, p)) % p,
@@ -39,6 +39,8 @@ def grokking_data(p: int, op: str = '/', train_fraction: float = 0.5):
     embed_eq = p + 1
     X = np.column_stack((X[:, 0], np.full(len(X), embed_op), X[:, 1], np.full(len(X), embed_eq)))
 
+    # seed numpy for deterministic train/test split
+    np.random.seed(seed)
     n_train = int(train_fraction * len(X))
     inds = np.random.permutation(len(X))
     Xtrain, Ttrain = X[inds[:n_train]], T[inds[:n_train]]
@@ -52,6 +54,6 @@ def grokking_data(p: int, op: str = '/', train_fraction: float = 0.5):
 
 if __name__ == '__main__':
     Xtrain, Ttrain, Xtest, Ttest = grokking_data(
-        11, op='/', train_fraction=0.5)
+        11, op='/', train_fraction=0.5, seed=42)
     print(Xtrain.shape, Ttrain.shape, Xtest.shape, Ttest.shape)
     print(Xtrain[0], Ttrain[0])

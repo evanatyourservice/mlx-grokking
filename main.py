@@ -1,3 +1,4 @@
+import warnings
 import argparse
 import numpy as np
 import torch
@@ -11,43 +12,34 @@ from models import Transformer
 from data import grokking_data
 from quad import QUAD
 
-torch.backends.cudnn.benchmark = True
+warnings.filterwarnings('ignore')
 torch.set_float32_matmul_precision('highest')
-
-
-"""
-Best settings:
-QUAD:
-lr=1e-3, wd=0.0, b1=0.9
-
-AdamW:
-lr=1e-3, wd=0.0, b1=0.9, b2=0.99
-"""
 
 
 parser = argparse.ArgumentParser(add_help=True)
 # data args
 parser.add_argument('--p', type=int, default=97, help='prime number')
 parser.add_argument('--op', type=str, default='/', choices=['*', '/', '+', '-'], help='operation')
-parser.add_argument('--train-fraction', type=float, default=0.5, help='train fraction')
+parser.add_argument('--train-fraction', type=float, default=0.33, help='train fraction')
 # model args
-parser.add_argument('--depth', type=int, default=2, help='depth')
+parser.add_argument('--depth', type=int, default=3, help='depth')
 parser.add_argument('--dim', type=int, default=128, help='dimension')
 parser.add_argument('--heads', type=int, default=1, help='heads')
-parser.add_argument('--dropout', type=float, default=0.2, help='dropout')
+parser.add_argument('--dropout', type=float, default=0.05, help='dropout')
 # optimizer args
 parser.add_argument('--optimizer', type=str, default='quad', choices=['adamw', 'quad'], help='optimizer')
-parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
+parser.add_argument('--lr', type=float, default=3e-3, help='learning rate')
 parser.add_argument('--weight-decay', type=float, default=0.1, help='weight decay')
-parser.add_argument('--beta1', type=float, default=0.95, help='beta1')
-parser.add_argument('--beta2', type=float, default=0.98, help='beta2')
+parser.add_argument('--beta1', type=float, default=0.9, help='beta1')
+parser.add_argument('--beta2', type=float, default=0.99, help='beta2')
 # training args
 parser.add_argument('-b', '--batch_size', type=int, default=512, help='batch size')
 parser.add_argument('-e', '--epochs', type=int, default=500, help='number of epochs')
 # misc args
 parser.add_argument('--seed', type=int, default=42, help='random seed')
 parser.add_argument('--disable-early-stop', action='store_false', help='continue training even after goal validation accuracy is reached')
-parser.add_argument('--lr-sweep', type=str, default='1e-2,3e-3,1e-3,3e-4,1e-4', help='comma separated list of learning rates to sweep, overrides --lr')
+parser.add_argument('--opt-sweep', type=str, default='adamw,quad', help='comma separated list of optimizers to sweep, overrides --optimizer')
+parser.add_argument('--lr-sweep', type=str, default=None, help='comma separated list of learning rates to sweep, overrides --lr')
 parser.add_argument('--weight-decay-sweep', type=str, default=None, help='comma separated list of weight decay values to sweep, overrides --weight-decay')
 parser.add_argument('--beta1-sweep', type=str, default=None, help='comma separated list of beta1 values to sweep, overrides --beta1')
 parser.add_argument('--beta2-sweep', type=str, default=None, help='comma separated list of beta2 values to sweep, overrides --beta2')
@@ -176,7 +168,7 @@ def build_optimizer(args, model_params):
             lr=args.lr,
             momentum=args.beta1,
             weight_decay=args.weight_decay,
-            preconditioner_lr=1.0,
+            preconditioner_lr=0.9,
             max_size_dense=float('inf'),
             max_skew_dense=1.0,
             store_triu_vector=False,
@@ -187,10 +179,17 @@ def build_optimizer(args, model_params):
 
 
 def main(args):
+    # set all seeds for determinism
     torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    
     device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 
-    Xtrain, Ttrain, Xtest, Ttest = grokking_data(args.p, op=args.op, train_fraction=args.train_fraction)
+    Xtrain, Ttrain, Xtest, Ttest = grokking_data(args.p, op=args.op, train_fraction=args.train_fraction, seed=args.seed)
 
     # model ------------------------------------------------------------------
     model = Transformer(depth=args.depth, dim=args.dim, heads=args.heads, n_tokens=args.p + 2, seq_len=Xtrain.size(1), dropout=args.dropout)
@@ -231,9 +230,16 @@ def _parse_sweep_list(value: str | None):
     return [float(v) for v in value.split(',') if v]
 
 
+def _parse_string_list(value: str | None):
+    if value is None:
+        return None
+    return [v.strip() for v in value.split(',') if v.strip()]
+
+
 if __name__ == '__main__':
     args = parser.parse_args()
 
+    opt_list = _parse_string_list(args.opt_sweep) or [args.optimizer]
     lr_list = _parse_sweep_list(args.lr_sweep) or [args.lr]
     wd_list = _parse_sweep_list(args.weight_decay_sweep) or [args.weight_decay]
     beta1_list = _parse_sweep_list(args.beta1_sweep) or [args.beta1]
@@ -242,22 +248,24 @@ if __name__ == '__main__':
     best_solved_epoch = args.epochs  # initialize with max epochs
     best_cfg = None
 
-    for lr in lr_list:
-        for wd in wd_list:
-            for beta1 in beta1_list:
-                for beta2 in beta2_list:
-                    run_args = argparse.Namespace(**vars(args))
-                    run_args.lr = lr
-                    run_args.weight_decay = wd
-                    run_args.beta1 = beta1
-                    run_args.beta2 = beta2
-                    solved_epoch = main(run_args)
-                    if solved_epoch < best_solved_epoch:
-                        best_solved_epoch = solved_epoch
-                        best_cfg = (lr, wd, beta1, beta2)
+    for opt in opt_list:
+        for lr in lr_list:
+            for wd in wd_list:
+                for beta1 in beta1_list:
+                    for beta2 in beta2_list:
+                        run_args = argparse.Namespace(**vars(args))
+                        run_args.optimizer = opt
+                        run_args.lr = lr
+                        run_args.weight_decay = wd
+                        run_args.beta1 = beta1
+                        run_args.beta2 = beta2
+                        solved_epoch = main(run_args)
+                        if solved_epoch < best_solved_epoch:
+                            best_solved_epoch = solved_epoch
+                            best_cfg = (opt, lr, wd, beta1, beta2)
 
     if best_cfg is not None:
-        lr, wd, beta1, beta2 = best_cfg
+        opt, lr, wd, beta1, beta2 = best_cfg
         print(
-            f"best config | lr {lr:.2e} wd {wd} b1 {beta1} b2 {beta2} | solved_epoch {best_solved_epoch}"
+            f"best config | opt {opt} lr {lr:.2e} wd {wd} b1 {beta1} b2 {beta2} | solved_epoch {best_solved_epoch}"
         )

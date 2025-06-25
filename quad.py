@@ -215,10 +215,12 @@ class QUAD(torch.optim.Optimizer):
                             Q[idx] = unpack_triu(q, N)
                     state["Q"] = Q
                 
+                startup_steps = 10
                 if g_reshaped.ndim <= 1:
-                    g_preconditioned = update_diag_solo(
-                        Q[0], L[0], g_reshaped, group["preconditioner_lr"]
-                    )
+                    for _ in range(startup_steps if state["step"] == 1 else 1):
+                        g_preconditioned = update_diag_solo(
+                            Q[0], L[0], g_reshaped, group["preconditioner_lr"]
+                        )
                 else:
                     if state["step"] % 250 == 0:
                         ql, qr = Q[0], Q[1]
@@ -229,43 +231,44 @@ class QUAD(torch.optim.Optimizer):
                         rho_r = rho.view(-1, *[1] * (qr.ndim - 1))
                         Q[0] /= rho_l
                         Q[1] *= rho_r
-
-                    if not diag[0] and not diag[1]:
-                        g_preconditioned = precondition_DD(
-                            Ql=Q[0],
-                            Qr=Q[1],
-                            Ll=L[0],
-                            Lr=L[1],
-                            G=g_reshaped,
-                            precond_lr=group["preconditioner_lr"]
-                        )
-                    elif diag[0] and not diag[1]:
-                        g_preconditioned = precondition_dD(
-                            Ql=Q[0],
-                            Qr=Q[1],
-                            Ll=L[0],
-                            Lr=L[1],
-                            G=g_reshaped,
-                            precond_lr=group["preconditioner_lr"]
-                        )
-                    elif not diag[0] and diag[1]:
-                        g_preconditioned = precondition_Dd(
-                            Ql=Q[0],
-                            Qr=Q[1],
-                            Ll=L[0],
-                            Lr=L[1],
-                            G=g_reshaped,
-                            precond_lr=group["preconditioner_lr"]
-                        )
-                    else:
-                        g_preconditioned = precondition_dd(
-                            Ql=Q[0],
-                            Qr=Q[1],
-                            Ll=L[0],
-                            Lr=L[1],
-                            G=g_reshaped,
-                            precond_lr=group["preconditioner_lr"]
-                        )
+                    
+                    for _ in range(startup_steps if state["step"] == 1 else 1):
+                        if not diag[0] and not diag[1]:
+                            g_preconditioned = precondition_DD(
+                                Ql=Q[0],
+                                Qr=Q[1],
+                                Ll=L[0],
+                                Lr=L[1],
+                                G=g_reshaped,
+                                precond_lr=group["preconditioner_lr"]
+                            )
+                        elif diag[0] and not diag[1]:
+                            g_preconditioned = precondition_dD(
+                                Ql=Q[0],
+                                Qr=Q[1],
+                                Ll=L[0],
+                                Lr=L[1],
+                                G=g_reshaped,
+                                precond_lr=group["preconditioner_lr"]
+                            )
+                        elif not diag[0] and diag[1]:
+                            g_preconditioned = precondition_Dd(
+                                Ql=Q[0],
+                                Qr=Q[1],
+                                Ll=L[0],
+                                Lr=L[1],
+                                G=g_reshaped,
+                                precond_lr=group["preconditioner_lr"]
+                            )
+                        else:
+                            g_preconditioned = precondition_dd(
+                                Ql=Q[0],
+                                Qr=Q[1],
+                                Ll=L[0],
+                                Lr=L[1],
+                                G=g_reshaped,
+                                precond_lr=group["preconditioner_lr"]
+                            )
 
                 if group["store_triu_vector"]:
                     for idx, (q_full, is_diag) in enumerate(zip(Q, diag)):
