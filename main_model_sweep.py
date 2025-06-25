@@ -44,6 +44,7 @@ parser.add_argument('--dim-sweep', type=str, default=None, help='comma separated
 parser.add_argument('--depth-sweep', type=str, default=None, help='comma separated list of depths to sweep')
 parser.add_argument('--heads-sweep', type=str, default=None, help='comma separated list of heads to sweep')
 parser.add_argument('--dropout-sweep', type=str, default=None, help='comma separated list of dropout values to sweep')
+parser.add_argument('--batch-size-sweep', type=str, default=None, help='comma separated list of batch sizes to sweep')
 
 
 class NeuralNetwork:
@@ -243,12 +244,17 @@ def plot_comparison(sweep_param_name: str, sweep_values: list, adamw_solved_epoc
         'dim': 'Model Dimension',
         'depth': 'Model Depth',
         'heads': 'Attention Heads',
-        'dropout': 'Dropout Rate'
+        'dropout': 'Dropout Rate',
+        'batch_size': 'Batch Size'
     }
     
     ax.set_xlabel(param_display_names.get(sweep_param_name, sweep_param_name.replace('-', ' ').title()))
     ax.set_ylabel('Epochs to Solve (90% Val Acc)')
     ax.set_title(param_display_names.get(sweep_param_name, sweep_param_name.replace('-', ' ').title()) + ' (400 max iters)')
+    
+    # set log scale for batch size
+    if sweep_param_name == 'batch_size':
+        ax.set_xscale('log')
     
     # set x-axis ticks to only show swept values
     ax.set_xticks(sweep_values)
@@ -324,6 +330,13 @@ if __name__ == '__main__':
         for value in sweep_values:
             config = vars(args).copy()
             config['dropout'] = value
+            sweep_configs.append((sweep_param, value, config))
+    elif args.batch_size_sweep:
+        sweep_param = 'batch_size'
+        sweep_values = _parse_int_list(args.batch_size_sweep)
+        for value in sweep_values:
+            config = vars(args).copy()
+            config['batch_size'] = value
             sweep_configs.append((sweep_param, value, config))
     else:
         # no sweep, just run once with default parameters
