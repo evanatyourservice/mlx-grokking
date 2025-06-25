@@ -20,9 +20,9 @@ parser = argparse.ArgumentParser(add_help=True)
 # data args
 parser.add_argument('--p', type=int, default=97, help='prime number')
 parser.add_argument('--op', type=str, default='/', choices=['*', '/', '+', '-'], help='operation')
-parser.add_argument('--train-fraction', type=float, default=0.33, help='train fraction')
+parser.add_argument('--train-fraction', type=float, default=0.4, help='train fraction')
 # model args
-parser.add_argument('--depth', type=int, default=3, help='depth')
+parser.add_argument('--depth', type=int, default=2, help='depth')
 parser.add_argument('--dim', type=int, default=128, help='dimension')
 parser.add_argument('--heads', type=int, default=1, help='heads')
 parser.add_argument('--dropout', type=float, default=0.05, help='dropout')
