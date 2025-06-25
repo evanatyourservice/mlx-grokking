@@ -1,6 +1,18 @@
-# Grokking Modular Arithmetic (MLX)
+# Grokking Modular Arithmetic
 
 ## PSGD-QUAD vs AdamW
+
+### QUAD Summary
+
+QUAD is a new variant of PSGD that has a matmul-only preconditioner update, so it is 
+fast enough to update every train step (only ~5 matmuls per dense preconditioner per step).
+
+- Saves preconditioner state step-to-step, solving the problem adaptively over time.
+- Can handle any size or dimension tensor from 0-D to N-D.
+- Preconditions multiple dimensions.
+- Can precondition a dimension with either a dense (m, m) or diagonal (m,) preconditioner, saving memory.
+
+## Optimizer Sweeps
 
 Note: lowered train fraction from 0.5 to 0.4 to make problem slightly harder.
 
